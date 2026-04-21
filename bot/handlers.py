@@ -6,7 +6,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot import gemini_service, notion_service
-from bot.parser import parse_expense
+from bot.parser import parse_expenses
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -64,11 +64,11 @@ async def handle_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text.strip()
 
     # Try Gemini first, fallback to rule-based
-    parsed = await gemini_service.parse_expense(text)
-    if parsed is None:
-        parsed = parse_expense(text)
+    items = await gemini_service.parse_expenses(text)
+    if not items:
+        items = parse_expenses(text)
 
-    if parsed is None:
+    if not items:
         await update.message.reply_text(
             "❓ Maaf, saya tidak bisa membaca pengeluarannya.\n"
             "Coba format seperti: `makan siang 35rb` atau `grab 25000`",
@@ -76,22 +76,20 @@ async def handle_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    nominal = parsed["nominal"]
-    kategori = parsed["kategori"]
-    deskripsi = parsed["deskripsi"]
-    tanggal = parsed["tanggal"]
+    lines = []
+    any_failed = False
 
-    saved = await notion_service.save_expense(nominal, kategori, deskripsi, tanggal)
+    for item in items:
+        saved = await notion_service.save_expense(
+            item["nominal"], item["kategori"], item["deskripsi"], item["tanggal"]
+        )
+        if saved:
+            lines.append(f"✅ *{item['deskripsi']}* — {_fmt_rupiah(item['nominal'])} [{item['kategori']}]")
+        else:
+            lines.append(f"❌ Gagal simpan: {item['deskripsi']}")
+            any_failed = True
 
-    if saved:
-        await update.message.reply_text(
-            f"✅ *{deskripsi}* — {_fmt_rupiah(nominal)} [{kategori}]",
-            parse_mode="Markdown",
-        )
-    else:
-        await update.message.reply_text(
-            "❌ Gagal menyimpan ke Notion. Silakan coba lagi.",
-        )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 @whitelist_only

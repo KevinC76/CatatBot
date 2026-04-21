@@ -7,8 +7,9 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "F&B": [
         "makan", "minum", "kopi", "cafe", "resto", "restoran", "warung", "bakso",
         "soto", "nasi", "ayam", "burger", "pizza", "snack", "jajan", "boba",
-        "tea", "lunch", "dinner", "breakfast", "sarapan", "mie", "sate",
+        "tea", "teh", "lunch", "dinner", "breakfast", "sarapan", "mie", "sate",
         "martabak", "indomie", "geprek", "pecel", "gado", "minuman", "makanan",
+        "es ", "susu", "roti",
     ],
     "Transport": [
         "grab", "gojek", "bensin", "parkir", "tol", "bus", "kereta", "ojek",
@@ -34,31 +35,42 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
+# Patterns that represent an amount — used to strip from description
+_AMOUNT_PATTERNS = [
+    r"\d+(?:[.,]\d+)?\s*(?:jt|juta)",
+    r"\d+(?:[.,]\d+)?\s*(?:rb|ribu|k)\b",
+    r"\b\d{1,3}(?:[.,]\d{3})+\b",
+    r"\b\d{4,}\b",
+]
+_AMOUNT_RE = re.compile("|".join(_AMOUNT_PATTERNS), re.IGNORECASE)
+
 
 def _parse_nominal(text: str) -> int | None:
-    t = text.lower().replace(",", ".")
+    t = text.lower()
 
-    # 1.5jt / 1jt
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:jt|juta)", t)
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:jt|juta)", t)
     if m:
-        return int(float(m.group(1)) * 1_000_000)
+        return int(float(m.group(1).replace(",", ".")) * 1_000_000)
 
-    # 35rb / 35ribu / 35k
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:rb|ribu|k\b)", t)
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:rb|ribu|k)\b", t)
     if m:
-        return int(float(m.group(1)) * 1_000)
+        return int(float(m.group(1).replace(",", ".")) * 1_000)
 
-    # 35.000 or 35,000 (thousand-separated)
     m = re.search(r"\b(\d{1,3}(?:[.,]\d{3})+)\b", t)
     if m:
         return int(re.sub(r"[.,]", "", m.group(1)))
 
-    # plain integer >= 100
     m = re.search(r"\b(\d{3,})\b", t)
     if m:
         return int(m.group(1))
 
     return None
+
+
+def _clean_description(text: str) -> str:
+    cleaned = _AMOUNT_RE.sub("", text)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,")
+    return cleaned[:80] if cleaned else text.strip()[:80]
 
 
 def _parse_kategori(text: str) -> str:
@@ -80,13 +92,36 @@ def _parse_tanggal(text: str) -> str:
     return today.isoformat()
 
 
-def parse_expense(text: str) -> dict | None:
+def _parse_single(text: str, tanggal: str) -> dict | None:
     nominal = _parse_nominal(text)
     if nominal is None or nominal <= 0:
         return None
     return {
         "nominal": nominal,
         "kategori": _parse_kategori(text),
-        "deskripsi": text.strip()[:100],
-        "tanggal": _parse_tanggal(text),
+        "deskripsi": _clean_description(text),
+        "tanggal": tanggal,
     }
+
+
+def parse_expenses(text: str) -> list[dict]:
+    tanggal = _parse_tanggal(text)
+
+    # Split on comma or "dan" to detect multiple items
+    parts = re.split(r",\s*|\bdan\b", text, flags=re.IGNORECASE)
+
+    if len(parts) > 1:
+        results = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            item = _parse_single(part, tanggal)
+            if item:
+                results.append(item)
+        if results:
+            return results
+
+    # Single item fallback
+    item = _parse_single(text, tanggal)
+    return [item] if item else []
