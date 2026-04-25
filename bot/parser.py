@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-CATEGORY_KEYWORDS: dict[str, list[str]] = {
+from bot.currency_service import detect_foreign_currency
+
+# ── Expense categories ────────────────────────────────────────────────────────
+
+EXPENSE_CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "F&B": [
         "makan", "minum", "kopi", "cafe", "resto", "restoran", "warung", "bakso",
         "soto", "nasi", "ayam", "burger", "pizza", "snack", "jajan", "boba",
@@ -35,7 +39,26 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
-# Patterns that represent an amount — used to strip from description
+# ── Income categories ─────────────────────────────────────────────────────────
+
+INCOME_KEYWORDS: frozenset[str] = frozenset({
+    "gaji", "gajian", "terima", "dapat", "income", "masuk", "cashback",
+    "refund", "bonus", "fee", "honor", "dapet", "profit", "hasil",
+    "transferan", "kiriman", "freelance", "dividend", "dividen", "thr",
+    "pemasukan", "pendapatan", "bayaran", "dibayar",
+})
+
+INCOME_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "Gaji":      ["gaji", "gajian", "salary", "upah", "thr"],
+    "Freelance": ["freelance", "project", "fee", "honor", "jasa", "klien", "bayaran"],
+    "Investasi": ["dividen", "dividend", "investasi", "return", "profit", "saham", "reksa"],
+    "Cashback":  ["cashback", "refund", "cashback"],
+    "Bonus":     ["bonus", "incentive", "reward"],
+    "Transfer":  ["transfer", "transferan", "kiriman", "terima", "dapat", "dapet"],
+}
+
+# ── Amount patterns ───────────────────────────────────────────────────────────
+
 _AMOUNT_PATTERNS = [
     r"\d+(?:[.,]\d+)?\s*(?:jt|juta)",
     r"\d+(?:[.,]\d+)?\s*(?:rb|ribu|k)\b",
@@ -73,12 +96,24 @@ def _clean_description(text: str) -> str:
     return cleaned[:80] if cleaned else text.strip()[:80]
 
 
-def _parse_kategori(text: str) -> str:
+def _detect_tipe(text: str) -> str:
     t = text.lower()
-    for kategori, keywords in CATEGORY_KEYWORDS.items():
-        for kw in keywords:
-            if kw in t:
+    for kw in INCOME_KEYWORDS:
+        if kw in t:
+            return "Pemasukan"
+    return "Pengeluaran"
+
+
+def _detect_kategori(text: str, tipe: str) -> str:
+    t = text.lower()
+    if tipe == "Pemasukan":
+        for kategori, keywords in INCOME_CATEGORY_KEYWORDS.items():
+            if any(kw in t for kw in keywords):
                 return kategori
+        return "Lainnya"
+    for kategori, keywords in EXPENSE_CATEGORY_KEYWORDS.items():
+        if any(kw in t for kw in keywords):
+            return kategori
     return "Lainnya"
 
 
@@ -93,35 +128,48 @@ def _parse_tanggal(text: str) -> str:
 
 
 def _parse_single(text: str, tanggal: str) -> dict | None:
+    # Check for foreign currency first
+    currency, foreign_amount = detect_foreign_currency(text)
+
+    if currency:
+        tipe     = _detect_tipe(text)
+        deskripsi = _clean_description(text)
+        return {
+            "nominal":      0,           # filled by currency_service later
+            "nominal_asli": foreign_amount,
+            "mata_uang":    currency,
+            "tipe":         tipe,
+            "kategori":     _detect_kategori(text, tipe),
+            "deskripsi":    deskripsi,
+            "tanggal":      tanggal,
+        }
+
     nominal = _parse_nominal(text)
     if nominal is None or nominal <= 0:
         return None
+
+    tipe = _detect_tipe(text)
     return {
-        "nominal": nominal,
-        "kategori": _parse_kategori(text),
-        "deskripsi": _clean_description(text),
-        "tanggal": tanggal,
+        "nominal":      nominal,
+        "nominal_asli": float(nominal),
+        "mata_uang":    "IDR",
+        "tipe":         tipe,
+        "kategori":     _detect_kategori(text, tipe),
+        "deskripsi":    _clean_description(text),
+        "tanggal":      tanggal,
     }
 
 
 def parse_expenses(text: str) -> list[dict]:
     tanggal = _parse_tanggal(text)
 
-    # Split on comma or "dan" to detect multiple items
+    # Try splitting on comma or "dan"
     parts = re.split(r",\s*|\bdan\b", text, flags=re.IGNORECASE)
-
     if len(parts) > 1:
-        results = []
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            item = _parse_single(part, tanggal)
-            if item:
-                results.append(item)
+        results = [_parse_single(p.strip(), tanggal) for p in parts if p.strip()]
+        results = [r for r in results if r]
         if results:
             return results
 
-    # Single item fallback
     item = _parse_single(text, tanggal)
     return [item] if item else []
