@@ -266,9 +266,21 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
 async def rekap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today  = date.today()
     monday = today - timedelta(days=today.weekday())
-    all_tx = await notion_service.get_expenses(monday.isoformat(), today.isoformat())
+    # FIX: Calculate Sunday (end of week) instead of using today
+    sunday = monday + timedelta(days=6)
+    
+    # DEBUG: Log date calculations
+    logger.debug("rekap function - today: %s, monday: %s, sunday: %s", 
+                 today.isoformat(), monday.isoformat(), sunday.isoformat())
+    
+    all_tx = await notion_service.get_expenses(monday.isoformat(), sunday.isoformat())
     out, inc = notion_service.split_by_tipe(all_tx)
-    period = f"{monday.strftime('%d %b')} – {today.strftime('%d %b %Y')}"
+    period = f"{monday.strftime('%d %b')} – {sunday.strftime('%d %b %Y')}"
+    
+    # DEBUG: Log query results
+    logger.debug("rekap query results - total transactions: %d, pengeluaran: %d, pemasukan: %d", 
+                 len(all_tx), len(out), len(inc))
+    
     await update.message.reply_text(
         _fmt_report(out, inc, "Rekap Minggu Ini", period), parse_mode="Markdown"
     )

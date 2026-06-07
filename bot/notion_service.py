@@ -60,6 +60,9 @@ async def save_expense(
 
 async def get_expenses(start_date: str, end_date: str) -> list[dict]:
     results, cursor = [], None
+    
+    # DEBUG: Log the date parameters being used
+    logger.debug("Notion API query - start_date: %s, end_date: %s", start_date, end_date)
 
     async with _get_client() as notion:
         while True:
@@ -77,8 +80,15 @@ async def get_expenses(start_date: str, end_date: str) -> list[dict]:
             if cursor:
                 kwargs["start_cursor"] = cursor
 
+            # DEBUG: Log the full query parameters
+            logger.debug("Notion API query parameters: %s", kwargs)
+
             try:
                 response = await notion.databases.query(**kwargs)
+                # DEBUG: Log API response summary
+                logger.debug("Notion API response - total results: %d, has_more: %s", 
+                           len(response.get("results", [])), 
+                           response.get("has_more"))
             except Exception as e:
                 logger.error("Notion query failed: %s", e)
                 break
@@ -106,13 +116,21 @@ async def get_expenses(start_date: str, end_date: str) -> list[dict]:
                         "deskripsi":    deskripsi,
                         "tipe":         tipe,
                     })
-                except (KeyError, IndexError, TypeError):
+                    
+                    # DEBUG: Log each transaction found
+                    logger.debug("Transaction found: tanggal=%s, deskripsi='%s', nominal=%d, tipe=%s", 
+                               tanggal, deskripsi, nominal, tipe)
+                except (KeyError, IndexError, TypeError) as e:
+                    logger.debug("Failed to parse page properties: %s, props keys: %s", e, list(props.keys()))
                     continue
 
             if not response.get("has_more"):
                 break
             cursor = response.get("next_cursor")
 
+    # DEBUG: Log final results summary
+    logger.debug("Notion API query completed - total transactions found: %d", len(results))
+    
     return results
 
 
