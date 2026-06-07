@@ -17,14 +17,27 @@ def _fmt_rupiah(amount: int) -> str:
 
 async def send_weekly_report(context) -> None:
     today    = date.today()
-    week_ago = today - timedelta(days=6)
-    all_tx   = await notion_service.get_expenses(week_ago.isoformat(), today.isoformat())
+    
+    # FIX: Calculate Monday-Sunday week (previous complete week since it runs on Sundays)
+    # Sunday is day 6, so Monday is 6 days before Sunday
+    monday = today - timedelta(days=6)
+    sunday = today  # Sunday is the day the report runs
+    
+    # DEBUG: Log date calculations
+    logger.debug("Weekly report scheduler - today: %s, monday: %s, sunday: %s", 
+                 today.isoformat(), monday.isoformat(), sunday.isoformat())
+    
+    all_tx   = await notion_service.get_expenses(monday.isoformat(), sunday.isoformat())
 
     out, inc  = notion_service.split_by_tipe(all_tx)
     total_out = sum(e["nominal"] for e in out)
     total_in  = sum(e["nominal"] for e in inc)
     net       = total_in - total_out
-    period    = f"{week_ago.strftime('%d %b')} – {today.strftime('%d %b %Y')}"
+    period    = f"{monday.strftime('%d %b')} – {sunday.strftime('%d %b %Y')}"
+    
+    # DEBUG: Log query results
+    logger.debug("Weekly report query results - total transactions: %d, pengeluaran: %d, pemasukan: %d",
+                 len(all_tx), len(out), len(inc))
 
     if not all_tx:
         text = f"📭 Tidak ada transaksi minggu ini ({period})."
