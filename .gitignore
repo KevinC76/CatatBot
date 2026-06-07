@@ -15,3 +15,5 @@ weekly_recap_analysis.md
 
 # KIRO specification files
 .kiro/
+# Test scripts
+test_date_calculations.py
