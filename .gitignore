@@ -7,3 +7,11 @@ venv/
 *.egg-info/
 dist/
 .DS_Store
+# Development tools documentation
+rtk_installation_documentation.md
+caveman_installation_documentation.md
+development_tools_documentation.md
+weekly_recap_analysis.md
+
+# KIRO specification files
+.kiro/
