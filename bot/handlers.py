@@ -34,6 +34,31 @@ def _fmt_tanggal_id(iso: str) -> str:
     return f"{d.day} {_ID_MONTHS[d.month - 1]} {d.year}"
 
 
+def _dup_key(item: dict) -> tuple[str, str, int, str]:
+    """Identity tuple for duplicate detection: tanggal + deskripsi(lower) + nominal + tipe."""
+    return (
+        item.get("tanggal", ""),
+        (item.get("deskripsi") or "").strip().lower(),
+        int(item.get("nominal") or 0),
+        item.get("tipe", "Pengeluaran"),
+    )
+
+
+async def _build_existing_keys(items: list[dict]) -> set[tuple]:
+    """Fetch same-day entries from Notion for every unique tanggal in items
+    and return their dup-key set. Gracefully degrades to empty set on failure."""
+    keys: set[tuple] = set()
+    for tanggal in {i["tanggal"] for i in items}:
+        try:
+            existing = await notion_service.get_expenses(tanggal, tanggal)
+        except Exception as e:
+            logger.warning("Dedup query failed for %s: %s", tanggal, e)
+            continue
+        for e in existing:
+            keys.add(_dup_key(e))
+    return keys
+
+
 def _fmt_item_confirm(item: dict) -> str:
     emoji = "💰" if item.get("tipe") == "Pemasukan" else "✅"
     desc  = item["deskripsi"]
@@ -260,8 +285,20 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text("⚠️ Data struk sudah tidak tersedia.")
             return
 
+        existing_keys = await _build_existing_keys(items)
+        seen_in_batch: set[tuple] = set()
+
         saved = 0
+        skipped: list[str] = []
+        failed: list[str] = []
+
         for item in items:
+            key = _dup_key(item)
+            if key in existing_keys or key in seen_in_batch:
+                skipped.append(item["deskripsi"])
+                continue
+            seen_in_batch.add(key)
+
             ok = await notion_service.save_expense(
                 nominal=item["nominal"],
                 kategori=item["kategori"],
@@ -274,9 +311,22 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             if ok:
                 saved += 1
+            else:
+                failed.append(item["deskripsi"])
 
-        total = saved
-        await query.edit_message_text(f"✅ {total} item berhasil disimpan ke Notion.")
+        reply_lines: list[str] = []
+        if saved:
+            reply_lines.append(f"✅ {saved} item berhasil disimpan ke Notion.")
+        if skipped:
+            reply_lines.append(f"⚠️ {len(skipped)} item dilewati (duplikat):")
+            reply_lines += [f"  • {d}" for d in skipped]
+        if failed:
+            reply_lines.append(f"❌ {len(failed)} item gagal disimpan:")
+            reply_lines += [f"  • {d}" for d in failed]
+        if not reply_lines:
+            reply_lines.append("⚠️ Tidak ada item yang diproses.")
+
+        await query.edit_message_text("\n".join(reply_lines))
 
     elif query.data == "receipt_cancel":
         context.user_data.pop("pending_receipt", None)
