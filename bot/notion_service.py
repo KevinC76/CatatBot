@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
 
 from notion_client import AsyncClient
 from notion_client.errors import APIResponseError

@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 
 from bot import currency_service, gemini_service, notion_service
 from bot.parser import parse_expenses
+from bot.timezone import today_wib
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,20 @@ logger = logging.getLogger(__name__)
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
+_ID_MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+              "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
 def _fmt_rupiah(amount: int) -> str:
     return f"Rp{amount:,}".replace(",", ".")
+
+
+def _fmt_tanggal_id(iso: str) -> str:
+    try:
+        d = date.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return iso
+    return f"{d.day} {_ID_MONTHS[d.month - 1]} {d.year}"
 
 
 def _fmt_item_confirm(item: dict) -> str:
@@ -202,15 +215,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     total = sum(i["nominal"] for i in items)
-    lines = ["📋 *Struk terdeteksi:*", ""]
+    unique_dates = {i["tanggal"] for i in items}
+    mixed_dates  = len(unique_dates) > 1
+
+    lines = ["📋 *Struk terdeteksi:*"]
+    if not mixed_dates:
+        lines.append(f"🗓 Tanggal struk: *{_fmt_tanggal_id(next(iter(unique_dates)))}*")
+    lines.append("")
+
     for item in items:
+        date_suffix = f" · 📅 {_fmt_tanggal_id(item['tanggal'])}" if mixed_dates else ""
         if item.get("mata_uang", "IDR") != "IDR":
             lines.append(
                 f"• {item['deskripsi']} — {item['mata_uang']} {item['nominal_asli']:g}"
-                f" → {_fmt_rupiah(item['nominal'])} [{item['kategori']}]"
+                f" → {_fmt_rupiah(item['nominal'])} [{item['kategori']}]{date_suffix}"
             )
         else:
-            lines.append(f"• {item['deskripsi']} — {_fmt_rupiah(item['nominal'])} [{item['kategori']}]")
+            lines.append(
+                f"• {item['deskripsi']} — {_fmt_rupiah(item['nominal'])} [{item['kategori']}]{date_suffix}"
+            )
     lines += ["", f"*Total: {_fmt_rupiah(total)}*", "", "Simpan semua ke Notion?"]
 
     context.user_data["pending_receipt"] = items
@@ -264,9 +287,8 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
 
 @whitelist_only
 async def rekap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today  = date.today()
+    today  = today_wib()
     monday = today - timedelta(days=today.weekday())
-    # FIX: Calculate Sunday (end of week) instead of using today
     sunday = monday + timedelta(days=6)
     
     # DEBUG: Log date calculations
@@ -288,7 +310,7 @@ async def rekap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @whitelist_only
 async def hari_ini(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today  = date.today().isoformat()
+    today  = today_wib().isoformat()
     all_tx = await notion_service.get_expenses(today, today)
 
     if not all_tx:
@@ -316,7 +338,7 @@ async def hari_ini(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @whitelist_only
 async def bulan_ini(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today     = date.today()
+    today     = today_wib()
     first_day = today.replace(day=1)
     all_tx    = await notion_service.get_expenses(first_day.isoformat(), today.isoformat())
     out, inc  = notion_service.split_by_tipe(all_tx)
@@ -330,7 +352,7 @@ async def bulan_ini(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @whitelist_only
 async def saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today     = date.today()
+    today     = today_wib()
     first_day = today.replace(day=1)
     all_tx    = await notion_service.get_expenses(first_day.isoformat(), today.isoformat())
     out, inc  = notion_service.split_by_tipe(all_tx)
@@ -355,7 +377,7 @@ async def saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @whitelist_only
 async def pemasukan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today     = date.today()
+    today     = today_wib()
     first_day = today.replace(day=1)
     all_tx    = await notion_service.get_expenses(first_day.isoformat(), today.isoformat())
     _, inc    = notion_service.split_by_tipe(all_tx)

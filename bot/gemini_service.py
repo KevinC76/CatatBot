@@ -5,11 +5,13 @@ import io
 import json
 import logging
 import re
-from datetime import date, timedelta
+from datetime import timedelta
 
 import google.generativeai as genai
 import PIL.Image
 
+from bot.image_utils import preprocess_receipt
+from bot.timezone import today_wib
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -122,8 +124,8 @@ Jika tidak ada transaksi yang bisa diekstrak → kembalikan: []
 
 
 async def parse_expenses(text: str) -> list[dict]:
-    today     = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    today     = today_wib().isoformat()
+    yesterday = (today_wib() - timedelta(days=1)).isoformat()
     prompt    = _TEXT_PROMPT.format(today=today, yesterday=yesterday)
 
     try:
@@ -146,8 +148,22 @@ Jika struk memiliki total/subtotal, abaikan — ambil item individual saja.
 
 Tanggal hari ini: {today}
 
+=== ATURAN TANGGAL (WAJIB) ===
+Cari tanggal transaksi di struk. Cek label umum: "Tanggal", "Tgl", "Date",
+"Tanggal Transaksi", atau tanggal di header/footer struk.
+Format yang sering muncul di struk Indonesia:
+  DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, D Mmm YYYY (mis. "1 Jun 2026", "01 Juni 2026")
+Konversi semua ke ISO YYYY-MM-DD.
+JANGAN gunakan tanggal hari ini ({today}) kalau tanggal tertera di struk.
+Hanya pakai {today} jika benar-benar tidak ada tanggal di struk.
+
+=== MATA UANG ===
 Deteksi mata uang dari simbol/tulisan di struk.
 Jika struk bukan IDR, isi "mata_uang" dengan kode ISO 3 huruf dan "nominal" dengan null.
+
+=== KUALITAS GAMBAR ===
+Jika gambar terlalu buram/gelap/miring untuk dibaca, kembalikan array dengan
+satu objek: [{{"error": "unreadable"}}]. Jangan menebak isinya.
 
 Kembalikan JSON array:
 [{{
@@ -156,27 +172,54 @@ Kembalikan JSON array:
   "mata_uang": "<IDR atau kode 3 huruf>",
   "kategori": "<F&B|Transport|Belanja|Hiburan|Tagihan|Kesehatan|Lainnya>",
   "deskripsi": "<nama item, maks 60 karakter, Title Case>",
-  "tanggal": "<YYYY-MM-DD dari struk, atau {today} jika tidak ada>"
+  "tanggal": "<YYYY-MM-DD dari struk, atau {today} jika benar-benar tidak ada>"
 }}]
 
-Jika gambar bukan struk / tidak terbaca → kembalikan: []
+Jika gambar bukan struk → kembalikan: []
 """
 
 
-async def parse_receipt_photo(image_bytes: bytes) -> list[dict]:
-    today  = date.today().isoformat()
-    prompt = _PHOTO_PROMPT.format(today=today)
-
+async def _call_vision(prompt: str, img_bytes: bytes) -> list[dict] | None:
+    """Single Gemini Vision attempt. Returns parsed list, [] if model says unreadable,
+    or None on hard failure."""
     try:
-        img      = PIL.Image.open(io.BytesIO(image_bytes))
+        img      = PIL.Image.open(io.BytesIO(img_bytes))
         response = await asyncio.to_thread(_model.generate_content, [prompt, img])
         result   = json.loads(_clean_json(response.text))
         if not isinstance(result, list):
+            return None
+        if len(result) == 1 and isinstance(result[0], dict) and result[0].get("error") == "unreadable":
             return []
-        # Receipt items are always Pengeluaran
-        for item in result:
-            item.setdefault("tipe", "Pengeluaran")
-        return [v for v in (_validate_item(i, today) for i in result) if v]
+        return result
     except Exception as e:
-        logger.warning("Gemini Vision parse failed: %s", e)
+        logger.warning("Gemini Vision call failed: %s", e)
+        return None
+
+
+async def parse_receipt_photo(image_bytes: bytes) -> list[dict]:
+    today  = today_wib().isoformat()
+    prompt = _PHOTO_PROMPT.format(today=today)
+
+    try:
+        preprocessed = preprocess_receipt(image_bytes)
+    except Exception as e:
+        logger.warning("Receipt preprocessing failed, using raw bytes: %s", e)
+        preprocessed = image_bytes
+
+    raw_items = await _call_vision(prompt, preprocessed)
+    used = "preprocessed"
+
+    if not raw_items:
+        logger.info("Receipt OCR attempt 1 (preprocessed) returned empty; retrying with raw image")
+        raw_items = await _call_vision(prompt, image_bytes)
+        used = "raw"
+
+    if not raw_items:
+        logger.warning("Receipt OCR: both attempts returned empty")
         return []
+
+    for item in raw_items:
+        item.setdefault("tipe", "Pengeluaran")
+    parsed = [v for v in (_validate_item(i, today) for i in raw_items) if v]
+    logger.info("Receipt OCR succeeded via %s attempt: %d item(s)", used, len(parsed))
+    return parsed

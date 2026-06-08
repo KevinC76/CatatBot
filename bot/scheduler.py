@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import timedelta
 
 from telegram.ext import Application
 
 from bot import notion_service
+from bot.timezone import today_wib
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -16,12 +17,9 @@ def _fmt_rupiah(amount: int) -> str:
 
 
 async def send_weekly_report(context) -> None:
-    today    = date.today()
-    
-    # FIX: Calculate Monday-Sunday week (previous complete week since it runs on Sundays)
-    # Sunday is day 6, so Monday is 6 days before Sunday
+    today    = today_wib()
     monday = today - timedelta(days=6)
-    sunday = today  # Sunday is the day the report runs
+    sunday = today
     
     # DEBUG: Log date calculations
     logger.debug("Weekly report scheduler - today: %s, monday: %s, sunday: %s", 

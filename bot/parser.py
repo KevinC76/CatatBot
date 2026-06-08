@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import timedelta
 
 from bot.currency_service import detect_foreign_currency
+from bot.timezone import today_wib
 
 # ── Expense categories ────────────────────────────────────────────────────────
 
@@ -119,7 +120,7 @@ def _detect_kategori(text: str, tipe: str) -> str:
 
 def _parse_tanggal(text: str) -> str:
     t = text.lower()
-    today = date.today()
+    today = today_wib()
     if "kemarin" in t:
         return (today - timedelta(days=1)).isoformat()
     if "2 hari lalu" in t or "dua hari lalu" in t:
